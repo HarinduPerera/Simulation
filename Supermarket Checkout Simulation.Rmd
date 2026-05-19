@@ -1,0 +1,255 @@
+---
+title: "Supermarket Simulation"
+author: "Harindu Perera"
+date: "2025-07-14"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Variables that fully describe the status of the system at any point in time:
+
+### System State Variables
+
+    Number of customers currently waiting in each queue.
+
+    Status of each checkout counter (whether busy or free).
+
+    Total number of customers currently in the supermarket
+
+### Counter Variables
+
+    Number of arrivals by time t
+
+    Number of departures after service completion by time t
+
+
+## Possible Events during the simulation:
+
+Customer arrival : A new customer arrives at the supermarket.
+
+Shopping completion : A customer finishes shopping and moves to the checkout area.
+
+Checkout queue joining event: Customer chooses a checkout counter with the shortest queue and joins it.
+
+Service start event: A cashier becomes free and begins servicing the next customer in their queue.
+
+Service completion event: A customer finishes checkout service and leaves the system.
+
+
+```{r warning=FALSE}
+supermarket_simulation <- function(seed) {
+  set.seed(seed)
+  
+  arrival.time = function(){ 
+    
+    t.start = 0
+    t.end = 13*60 
+    lambda = 5
+    t.current = t.start
+    arrival_times = c()
+    
+    while (t.current < t.end){
+      u = runif(1)
+      t.current = t.current + (-log(u))/lambda
+      
+      if(t.current < t.end) 
+        arrival_times = c(arrival_times, t.current)
+    }
+    return(arrival_times)
+  }
+  
+  Arrivals_in_a_Day = arrival.time()
+  no_of_customers = length(Arrivals_in_a_Day)
+  
+  shopping.times = rlnorm(no_of_customers, meanlog = 0, sdlog = 0.5)
+  
+  customer.data <- data.frame(
+    Customer_No = seq_len(no_of_customers),
+    Arrival_Time = Arrivals_in_a_Day,
+    Shopping_Time = shopping.times
+  )
+  
+  customer.data$Checkout_Start <- customer.data$Arrival_Time + customer.data$Shopping_Time
+  
+  service_rates <- c(1/2.5, 1/3, 1/3.5, 1/4)
+  
+  customer.data$Counter_Assigned <- NA
+  customer.data$Service_Start <- NA
+  customer.data$Service_End <- NA
+  customer.data$Waiting_Time <- NA
+  
+  # Track the Time when each counter becomes free to serve the next customer
+  counter_free_time <- rep(0, 4)
+  # Accumulates the total time each counter spends actively serving customers
+  counter_busy_time <- rep(0, 4)
+  
+  # Sort the customer data by their checkout start time to process events in chronological order.
+  sorted_customers <- customer.data[order(customer.data$Checkout_Start), ]
+  
+  for (i in 1:nrow(sorted_customers)) {
+    # Get the original index of the current customer from the unsorted data frame
+    customer_index <- which(customer.data$Customer_No == sorted_customers$Customer_No[i])
+    # Get the time this customer arrives at the checkout area
+    checkout_time <- sorted_customers$Checkout_Start[i]
+    
+    # The current queue length for each counter. A customer is considered in a queue if they are assigned to that counter AND their service has not yet ended by the current 'checkout_time'.
+    queue_lengths <- sapply(1:4, function(x) {
+      sum(customer.data$Counter_Assigned == x & 
+            customer.data$Service_End > checkout_time, na.rm = TRUE)
+    })
+    
+    min_length <- min(queue_lengths)
+    # Identify all counters that have this minimum queue length
+    shortest_counters <- which(queue_lengths == min_length)
+    
+    # Choose a counter for the current customer. If there's a tie (multiple shortest queues), randomly sample one of them. Otherwise, choose the single shortest counter.
+    chosen_counter <- if(length(shortest_counters) > 1) {
+      sample(shortest_counters, 1)
+    } else {
+      shortest_counters
+    }
+    
+    # Assign the chosen counter to the current customer
+    customer.data$Counter_Assigned[customer_index] <- chosen_counter
+    
+    service_start <- max(checkout_time, counter_free_time[chosen_counter])
+    customer.data$Service_Start[customer_index] <- service_start
+    
+    service_time <- rexp(1, service_rates[chosen_counter])
+    service_end <- service_start + service_time
+    customer.data$Service_End[customer_index] <- service_end
+    
+    customer.data$Waiting_Time[customer_index] <- service_start - checkout_time
+    
+    counter_free_time[chosen_counter] <- service_end
+    
+    counter_busy_time[chosen_counter] <- counter_busy_time[chosen_counter] + service_time
+  }
+  
+  customer.data$Total_Time <- customer.data$Service_End - customer.data$Arrival_Time
+  
+  avg_waiting_in_counter <- sapply(1:4, function(i) {
+    mean(customer.data$Waiting_Time[customer.data$Counter_Assigned == i], na.rm=TRUE)
+  })
+  
+  avg_total_time <- mean(customer.data$Total_Time)
+  
+  simulation_end_time <- max(customer.data$Service_End)
+  utilization <- counter_busy_time / simulation_end_time
+  
+  total_customers_served <- nrow(customer.data)
+  
+  return(list(
+    avg_waiting_in_counter = avg_waiting_in_counter,
+    avg_total_time = avg_total_time,
+    utilization = utilization,
+    total_customers_served = total_customers_served,
+    shopping_times = shopping.times
+    
+  ))
+}
+
+```
+
+```{r}
+n_runs <- 100
+
+results <- lapply(1:n_runs, supermarket_simulation)
+
+avg_wait_matrix <- matrix(NA, n_runs, 4) 
+avg_total_vector <- numeric(n_runs)      
+util_matrix <- matrix(NA, n_runs, 4)
+total_cust_vector <- numeric(n_runs)
+
+for (i in 1:n_runs) {
+  avg_wait_matrix[i, ] <- results[[i]]$avg_waiting_in_counter
+  avg_total_vector[i] <- results[[i]]$avg_total_time
+  util_matrix[i, ] <- results[[i]]$utilization
+  total_cust_vector[i] <- results[[i]]$total_customers_served
+}
+
+summary_results <- data.frame(
+  Counter = 1:4,
+  Mean_Avg_Waiting_Time = colMeans(avg_wait_matrix),
+  Mean_Utilization = colMeans(util_matrix)
+)
+```
+
+
+```{r}
+print(round(summary_results, 3))
+
+```
+
+```{r}
+cat(sprintf(
+  "\nAverage total time in supermarket: %.2f minutes (95%% CI: %.2f - %.2f)\n",
+  mean(avg_total_vector),
+  quantile(avg_total_vector, 0.025),
+  quantile(avg_total_vector, 0.975)
+))
+cat(sprintf(
+  "Average number of customers served per day: %.2f (95%% CI: %.2f - %.2f)\n",
+  mean(total_cust_vector),
+  quantile(total_cust_vector, 0.025),
+  quantile(total_cust_vector, 0.975)
+))
+
+```
+
+
+```{r,warning=FALSE}
+library(ggplot2)
+
+all_shopping_times <- unlist(lapply(results, function(x) x$shopping_times))
+df_shopping <- data.frame(ShoppingTime = all_shopping_times)
+
+# Histogram for shopping time
+ggplot(df_shopping, aes(x = ShoppingTime)) +
+  geom_histogram(bins = 30, fill = "yellow", color = "black") +
+  ggtitle("Histogram of Shopping Times (All Simulation Runs)") +
+  xlab("Shopping Time (minutes)") +
+  ylab("Frequency") +
+  theme_minimal()
+
+```
+
+
+```{r,warning=FALSE}
+library(ggplot2)
+library(reshape2)
+
+df_wait <- as.data.frame(avg_wait_matrix)
+names(df_wait) <- paste0("Counter-", 1:4)
+df_wait_long <- melt(df_wait, variable.name = "Counter", value.name = "WaitingTime")
+
+# Boxplot for average waiting time
+ggplot(df_wait_long, aes(x = Counter, y = WaitingTime, fill = Counter)) +
+  geom_boxplot() +
+  ggtitle("Distribution of Average Waiting Times by Counter") +
+  ylab("Waiting Time (min)") +
+  theme_minimal()
+
+# Histogram of average total time in the supermarket per run
+hist(avg_total_vector, main = "Avg Total Time in Supermarket per Run",
+     xlab = "Time (min)", col = "lightgreen", breaks = 20)
+
+# Boxplot for utilization
+boxplot(util_matrix, names = paste("Counter", 1:4),
+        main = "Cashier Utilization by Counter",
+        ylab = "Utilization", col = "orange")
+
+# Histogram for total customers served per day
+df_cust <- data.frame(TotalCustomers = total_cust_vector)
+ggplot(df_cust, aes(x = TotalCustomers)) +
+  geom_histogram(binwidth = 15, fill = "steelblue", color = "black") +
+  ggtitle("Total Customers Served per Day") +
+  xlab("Number of Customers")
+```
+
+
+
